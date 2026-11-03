@@ -3,26 +3,26 @@ generator client {
 }
 
 datasource db {
-  provider = "mysql"
+  provider = "sqlite"
   url      = env("DATABASE_URL")
 }
 
 model HanziEntry {
   id                        Int      @id @default(autoincrement())
-  sourceId                  String   @unique @map("source_id") @db.VarChar(32)
-  level                     Int      @db.TinyInt
+  sourceId                  String   @unique @map("source_id")
+  level                     Int
 
-  simplified                String   @db.VarChar(50)
-  pinyin                    String   @db.VarChar(100)
-  pinyinNormalized          String   @map("pinyin_normalized") @db.VarChar(120)
-  meaning                   String   @db.Text
+  simplified                String
+  pinyin                    String
+  pinyinNormalized          String   @map("pinyin_normalized")
+  meaning                   String
 
-  sentence                  String   @db.Text
-  sentencePinyin            String   @map("sentence_pinyin") @db.Text
-  sentencePinyinNormalized   String   @map("sentence_pinyin_normalized") @db.VarChar(180)
-  sentenceNormalized        String   @map("sentence_normalized") @db.Text
-  sentenceMeaning           String   @map("sentence_meaning") @db.Text
-  category                  String   @db.VarChar(100)
+  sentence                  String
+  sentencePinyin            String   @map("sentence_pinyin")
+  sentencePinyinNormalized  String   @map("sentence_pinyin_normalized")
+  sentenceNormalized        String   @map("sentence_normalized")
+  sentenceMeaning           String   @map("sentence_meaning")
+  category                  String
 
   createdAt                 DateTime @default(now()) @map("created_at")
   updatedAt                 DateTime @updatedAt @map("updated_at")
