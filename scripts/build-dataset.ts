@@ -2,12 +2,11 @@ import fs from "node:fs/promises";
 import path from "node:path";
 
 import { parse } from "csv-parse/sync";
-import { PrismaClient } from "@prisma/client";
 
 import { normalizePinyin } from "../app/lib/normalize";
 
-const prisma = new PrismaClient();
-const FILE_PATH = path.join(process.cwd(), "database", "full-HSK.csv");
+const CSV_PATH = path.join(process.cwd(), "database", "full-HSK.csv");
+const OUT_PATH = path.join(process.cwd(), "app", "data", "hanzi-dataset.json");
 
 type RawRow = Record<string, string>;
 
@@ -42,7 +41,7 @@ function parseLevel(value: string) {
 }
 
 async function main() {
-  const rawCsv = await fs.readFile(FILE_PATH, "utf8");
+  const rawCsv = await fs.readFile(CSV_PATH, "utf8");
 
   const rows = parse(rawCsv, {
     columns: true,
@@ -53,7 +52,7 @@ async function main() {
   }) as RawRow[];
 
   const data = rows
-    .map((row, index) => {
+    .map((row) => {
       const sourceId = pick(row, ["ID", "Id", "id"]);
       const levelRaw = pick(row, ["Level", "level", "HSK Level", "HSKLevel", "Group"]);
       const simplified = pick(row, ["Word", "Simplified", "simplified"]);
@@ -100,44 +99,44 @@ async function main() {
         category,
       };
     })
-    .filter(Boolean) as Array<{
-    sourceId: string;
-    level: number;
-    simplified: string;
-    pinyin: string;
-    pinyinNormalized: string;
-    meaning: string;
-    sentence: string;
-    sentencePinyin: string;
-    sentencePinyinNormalized: string;
-    sentenceNormalized: string;
-    sentenceMeaning: string;
-    category: string;
-    rankOrder: number;
-  }>;
+    .filter((row) => row !== null);
 
   if (data.length === 0) {
-    throw new Error("Tidak ada row valid yang bisa di-import. Cek kolom CSV kamu.");
+    throw new Error("Tidak ada row valid yang bisa di-build. Cek kolom CSV kamu.");
   }
 
-  await prisma.hanziEntry.deleteMany();
+  // The dataset is ordered exactly the way the database ordered it: sourceId is a
+  // string column, so `ORDER BY source_id ASC` was a lexicographic comparison.
+  // Ordering once here lets pagination be a plain slice at request time.
+  data.sort((a, b) => (a.sourceId < b.sourceId ? -1 : a.sourceId > b.sourceId ? 1 : 0));
 
-  const batchSize = 1000;
+  const withIds = data.map((row, index) => ({ id: index + 1, ...row }));
 
-  for (let i = 0; i < data.length; i += batchSize) {
-    await prisma.hanziEntry.createMany({
-      data: data.slice(i, i + batchSize),
-    });
+  const seen = new Set<string>();
+  for (const row of withIds) {
+    if (seen.has(row.sourceId)) {
+      throw new Error(`Duplicate sourceId in CSV: ${row.sourceId}`);
+    }
+    seen.add(row.sourceId);
   }
 
-  console.log(`Imported ${data.length} rows successfully.`);
+  await fs.mkdir(path.dirname(OUT_PATH), { recursive: true });
+  await fs.writeFile(OUT_PATH, `${JSON.stringify(withIds)}\n`, "utf8");
+
+  const byLevel = withIds.reduce<Record<number, number>>((acc, row) => {
+    acc[row.level] = (acc[row.level] ?? 0) + 1;
+    return acc;
+  }, {});
+
+  console.log(`Wrote ${withIds.length} rows to ${path.relative(process.cwd(), OUT_PATH)}`);
+  console.log(
+    `Levels: ${Object.entries(byLevel)
+      .map(([level, count]) => `L${level}=${count}`)
+      .join(", ")}`,
+  );
 }
 
-main()
-  .catch((error) => {
-    console.error(error);
-    process.exitCode = 1;
-  })
-  .finally(async () => {
-    void prisma.$disconnect();
-  });
+main().catch((error) => {
+  console.error(error);
+  process.exitCode = 1;
+});

@@ -9,7 +9,3 @@ export function normalizePinyin(input: string): string {
     .toLowerCase()
     .trim();
 }
-
-export function escapeLike(input: string): string {
-  return input.replace(/[\\%_]/g, "\\$&");
-}

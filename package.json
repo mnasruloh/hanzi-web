@@ -7,21 +7,14 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
-    "postinstall": "prisma generate",
-    "db:generate": "prisma generate",
-    "db:migrate": "prisma migrate dev",
-    "db:push": "prisma db push",
-    "db:studio": "prisma studio",
-    "db:import": "tsx scripts/import-hanzi-csv.ts"
+    "data:build": "tsx scripts/build-dataset.ts"
   },
   "dependencies": {
-    "@prisma/client": "^6.19.3",
-    "csv-parse": "^5.5.6",
     "hanzi-writer": "^3.7.3",
     "next": "16.2.4",
-    "prisma": "^6.19.3",
     "react": "19.2.4",
-    "react-dom": "19.2.4"
+    "react-dom": "19.2.4",
+    "server-only": "^0.0.1"
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4",
@@ -29,6 +22,7 @@
     "@types/react": "^19",
     "@types/react-dom": "^19",
     "autoprefixer": "^10.4.20",
+    "csv-parse": "^5.5.6",
     "eslint": "^9",
     "eslint-config-next": "16.2.4",
     "postcss": "^8.5.0",

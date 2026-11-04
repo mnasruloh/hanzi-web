@@ -1,5 +1,5 @@
-import { prisma } from "@/app/lib/prisma";
 import { normalizePinyin } from "@/app/lib/normalize";
+import { hanziRows, sentenceCategories, type HanziRow } from "@/app/lib/hanzi-data";
 
 export type LevelFilter = "all" | "beginner" | "intermediate" | "advanced";
 
@@ -58,16 +58,6 @@ function levelToNumber(level: LevelFilter) {
   return null;
 }
 
-function buildLevelWhere(level: LevelFilter) {
-  const levelNumber = levelToNumber(level);
-
-  return levelNumber === null
-    ? {}
-    : {
-        level: levelNumber,
-      };
-}
-
 function scoreWordItem(item: HanziEntryItem, q: string, qNorm: string) {
   const simplified = item.simplified.toLowerCase();
   const pinyin = item.pinyin.toLowerCase();
@@ -117,31 +107,61 @@ function scoreSentenceItem(item: SentenceEntryItem, q: string, qNorm: string) {
   return 99;
 }
 
-const WORD_SELECT = {
-  id: true,
-  sourceId: true,
-  level: true,
-  simplified: true,
-  pinyin: true,
-  pinyinNormalized: true,
-  meaning: true,
-} as const;
+// The database compared `contains` with SQL LIKE, which folds ASCII case for us.
+// Doing it explicitly keeps every query that worked before working still.
+function contains(haystack: string, needle: string) {
+  return haystack.toLowerCase().includes(needle.toLowerCase());
+}
 
-const SENTENCE_SELECT = {
-  id: true,
-  sourceId: true,
-  level: true,
-  simplified: true,
-  pinyin: true,
-  pinyinNormalized: true,
-  meaning: true,
-  sentence: true,
-  sentencePinyin: true,
-  sentencePinyinNormalized: true,
-  sentenceNormalized: true,
-  sentenceMeaning: true,
-  category: true,
-} as const;
+function matchesWord(row: HanziRow, q: string, qNorm: string) {
+  return (
+    contains(row.simplified, q) ||
+    contains(row.pinyin, q) ||
+    contains(row.pinyinNormalized, qNorm) ||
+    contains(row.meaning, q)
+  );
+}
+
+function matchesSentence(row: HanziRow, q: string, qNorm: string) {
+  return (
+    contains(row.simplified, q) ||
+    contains(row.pinyin, q) ||
+    contains(row.pinyinNormalized, qNorm) ||
+    contains(row.meaning, q) ||
+    contains(row.sentence, q) ||
+    contains(row.sentencePinyin, q) ||
+    contains(row.sentencePinyinNormalized, qNorm) ||
+    contains(row.sentenceNormalized, q) ||
+    contains(row.sentenceMeaning, q) ||
+    contains(row.category, q)
+  );
+}
+
+function toWordItem(row: HanziRow): HanziEntryItem {
+  return {
+    id: row.id,
+    sourceId: row.sourceId,
+    level: row.level,
+    simplified: row.simplified,
+    pinyin: row.pinyin,
+    pinyinNormalized: row.pinyinNormalized,
+    meaning: row.meaning,
+  };
+}
+
+function toSentenceItem(row: HanziRow): SentenceEntryItem {
+  return { ...row };
+}
+
+function buildPage<TItem>(rows: TItem[], safePage: number, take: number): SearchResult<TItem> {
+  return {
+    items: rows.slice((safePage - 1) * take, (safePage - 1) * take + take),
+    total: rows.length,
+    totalPages: Math.max(1, Math.ceil(rows.length / take)),
+    currentPage: safePage,
+    pageSize: take,
+  };
+}
 
 export async function searchEntries({
   query,
@@ -151,71 +171,33 @@ export async function searchEntries({
 }: WordSearchArgs): Promise<SearchResult<HanziEntryItem>> {
   const safePage = Number.isFinite(page) && page > 0 ? page : 1;
   const take = pageSize;
-  const skip = (safePage - 1) * take;
   const q = query.trim();
-  const whereBase = buildLevelWhere(level);
+  const levelNumber = levelToNumber(level);
+
+  const scoped =
+    levelNumber === null ? hanziRows : hanziRows.filter((row) => row.level === levelNumber);
 
   if (!q) {
-    const [items, total] = await Promise.all([
-      prisma.hanziEntry.findMany({
-        where: whereBase,
-        orderBy: [{ sourceId: "asc" }],
-        skip,
-        take,
-        select: WORD_SELECT,
-      }),
-      prisma.hanziEntry.count({ where: whereBase }),
-    ]);
-
-    return {
-      items,
-      total,
-      totalPages: Math.max(1, Math.ceil(total / take)),
-      currentPage: safePage,
-      pageSize: take,
-    };
+    // Dataset order is already sourceId ascending, so this is the old
+    // findMany + count pair reduced to one pass and a slice.
+    return buildPage(scoped.map(toWordItem), safePage, take);
   }
 
   const qNorm = normalizePinyin(q);
 
-  const rows = await prisma.hanziEntry.findMany({
-    where: {
-      ...whereBase,
-      OR: [
-        { simplified: { contains: q } },
-        { pinyin: { contains: q } },
-        { pinyinNormalized: { contains: qNorm } },
-        { meaning: { contains: q } },
-      ],
-    },
-    select: WORD_SELECT,
-  });
-
-  const items = rows
+  const matched = scoped
+    .filter((row) => matchesWord(row, q, qNorm))
     .sort(
       (a, b) =>
         scoreWordItem(a, q, qNorm) - scoreWordItem(b, q, qNorm) ||
         a.sourceId.localeCompare(b.sourceId),
-    )
-    .slice(skip, skip + take);
+    );
 
-  return {
-    items,
-    total: rows.length,
-    totalPages: Math.max(1, Math.ceil(rows.length / take)),
-    currentPage: safePage,
-    pageSize: take,
-  };
+  return buildPage(matched.map(toWordItem), safePage, take);
 }
 
 export async function getSentenceCategories(): Promise<string[]> {
-  const rows = await prisma.hanziEntry.findMany({
-    distinct: ["category"],
-    select: { category: true },
-    orderBy: { category: "asc" },
-  });
-
-  return rows.map((row) => row.category).filter(Boolean);
+  return sentenceCategories;
 }
 
 export async function searchSentences({
@@ -226,71 +208,24 @@ export async function searchSentences({
 }: SentenceSearchArgs): Promise<SearchResult<SentenceEntryItem>> {
   const safePage = Number.isFinite(page) && page > 0 ? page : 1;
   const take = pageSize;
-  const skip = (safePage - 1) * take;
   const q = query.trim();
 
-  const categoryWhere =
-    category === "all"
-      ? {}
-      : {
-          category,
-        };
+  const scoped =
+    category === "all" ? hanziRows : hanziRows.filter((row) => row.category === category);
 
   if (!q) {
-    const [items, total] = await Promise.all([
-      prisma.hanziEntry.findMany({
-        where: categoryWhere,
-        orderBy: [{ sourceId: "asc" }],
-        skip,
-        take,
-        select: SENTENCE_SELECT,
-      }),
-      prisma.hanziEntry.count({ where: categoryWhere }),
-    ]);
-
-    return {
-      items,
-      total,
-      totalPages: Math.max(1, Math.ceil(total / take)),
-      currentPage: safePage,
-      pageSize: take,
-    };
+    return buildPage(scoped.map(toSentenceItem), safePage, take);
   }
 
   const qNorm = normalizePinyin(q);
 
-  const rows = await prisma.hanziEntry.findMany({
-    where: {
-      ...categoryWhere,
-      OR: [
-        { simplified: { contains: q } },
-        { pinyin: { contains: q } },
-        { pinyinNormalized: { contains: qNorm } },
-        { meaning: { contains: q } },
-        { sentence: { contains: q } },
-        { sentencePinyin: { contains: q } },
-        { sentencePinyinNormalized: { contains: qNorm } },
-        { sentenceNormalized: { contains: q } },
-        { sentenceMeaning: { contains: q } },
-        { category: { contains: q } },
-      ],
-    },
-    select: SENTENCE_SELECT,
-  });
-
-  const items = rows
+  const matched = scoped
+    .filter((row) => matchesSentence(row, q, qNorm))
     .sort(
       (a, b) =>
         scoreSentenceItem(a, q, qNorm) - scoreSentenceItem(b, q, qNorm) ||
         a.sourceId.localeCompare(b.sourceId),
-    )
-    .slice(skip, skip + take);
+    );
 
-  return {
-    items,
-    total: rows.length,
-    totalPages: Math.max(1, Math.ceil(rows.length / take)),
-    currentPage: safePage,
-    pageSize: take,
-  };
+  return buildPage(matched.map(toSentenceItem), safePage, take);
 }
